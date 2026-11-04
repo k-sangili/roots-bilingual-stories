@@ -26,7 +26,7 @@ Kids in San Jose, grandparents in Chennai. When a little one broke his arm, the 
 
 ## How to use
 
-1. **The story or message:** pick the input and output languages, type the story in the input language, or record a voice note (recording stays on the device, played back in the browser) and type what was said.
+1. **The story or message:** pick the input and output languages, type the story in the input language, or record a voice note: in a supported browser (Chrome/Edge) what is said is transcribed live into the story box in the input language, and the recording also plays back on the device. In other browsers the recording plays back and you type what was said.
 2. **Make my book:** the story splits into pages, Tamil on each page.
 3. **Output-language side:** with a Meta Model API key (entered in the tab, never stored), Muse Spark translates each page with cultural context and explains idioms, blessings, and expressions. Without a key, the output side stays editable — fill it in yourself, and the book still works.
 4. **Hear it:** tap 🔊 on any page to hear the input language or the output language, using the device's voice for that language if installed.
@@ -60,11 +60,11 @@ bilingual book: Tamil + English + note + illustration, editable, saveable, expor
 | **Muse Wonder** | Future: describe a family photo so its illustration matches the real scene | Listed as future only — not shipped, not claimed |
 | **SAM 3.1** | Future: keep a subject consistent across illustrations | Listed as future only — not shipped, not claimed |
 
-**Honest state of the live path:** the app calls the Meta Model API directly from the browser (`https://api.meta.ai/v1`, Bearer key entered in the tab, never stored or sent anywhere else) — Spark via `/chat/completions`, Image via `/images/generations`. These calls have not yet been exercised against a live key, because the $150 credit key has not arrived yet. Without a key the app runs in labelled local mode and never presents a rule-based result as a model result. An API error is shown in plain text and leaves the editable English side untouched. At $0.01 per illustration, a 6-page book costs $0.06 in images.
+**Honest state of the live path:** the app calls the Meta Model API through its own /api route handlers (the browser never calls api.meta.ai directly, so a browser CORS block cannot silently empty the English side) (`https://api.meta.ai/v1`, Bearer key entered in the tab, never stored or sent anywhere else) — Spark via `/chat/completions`, Image via `/images/generations`. These calls have not yet been exercised against a live key, because the $150 credit key has not arrived yet. Without a key the app runs in labelled local mode and never presents a rule-based result as a model result. An API error is shown in plain text and leaves the editable English side untouched. At $0.01 per illustration, a 6-page book costs $0.06 in images.
 
 ## Technical depth
 
-- **Next.js app:** `app/page.tsx` is a client component holding the whole Roots experience — story input, voice recording, page splitting, tap-to-hear, editable translations, save/export. The standalone single-file MVP it was ported from lives in the `k-sangili/roots` repo.
+- **Next.js app:** `app/page.tsx` is a client component holding the whole Roots experience — story input, voice recording with live transcription, page splitting, tap-to-hear, editable translations, save/export — plus `app/api/translate` and `app/api/illustrate` route handlers that proxy the Meta calls. The standalone single-file MVP it was ported from lives in the `k-sangili/roots` repo.
 - **Deterministic fallback:** page splitting is rule-based and auditable; the book is fully usable without any model call.
 - **Privacy by design:** voice recordings and stories stay in the browser; the only network calls are the ones the user explicitly enables with their own key, to Meta's API.
 - **Human-in-the-loop by design:** every English line is editable, and every translation note is shown next to the page it belongs to.
@@ -73,7 +73,7 @@ bilingual book: Tamil + English + note + illustration, editable, saveable, expor
 ## Limitations — stated plainly
 
 - This is a **family storybook, not a professional translation service**. Check any translation that matters before relying on it.
-- Voice transcription is not automatic in v0: the grandparent records, and the text is typed (browser dictation can help where supported).
+- Voice transcription uses the browser's SpeechRecognition where supported (Chrome/Edge); in other browsers the recording plays back and the text is typed.
 - Tamil speech playback uses the device's Tamil voice if installed; otherwise the browser falls back to its default voice.
 - No accounts, no shared library, no photo upload in v0 — a book lives in the browser it was made in, or in its downloaded file.
 
