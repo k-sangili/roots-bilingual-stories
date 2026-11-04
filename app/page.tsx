@@ -34,6 +34,28 @@ const langName = (code: string) =>
 const langSpeech = (code: string) =>
   (LANGUAGES.find((l) => l.code === code) || { speech: "en" }).speech;
 
+// Minimal typing for the browser SpeechRecognition API (Chrome/Edge, and
+// Safari where supported). Feature-detected at runtime; absence only
+// disables live transcription, never recording.
+interface SpeechRecognitionInstance {
+  lang: string;
+  continuous: boolean;
+  interimResults: boolean;
+  onresult:
+    | ((event: {
+        resultIndex: number;
+        results: ArrayLike<ArrayLike<{ transcript: string }>>;
+      }) => void)
+    | null;
+  onerror: ((event: { error: string }) => void) | null;
+  onend: (() => void) | null;
+  start: () => void;
+  stop: () => void;
+}
+
+const recognitionLang = (code: string) =>
+  code === "ta" ? "ta-IN" : code === "en" ? "en-US" : code;
+
 // Rule-based page split (no key needed): two sentences per page, max 8 pages.
 function splitPages(text: string): string[] {
   const sentences = text
@@ -59,72 +81,61 @@ function escapeHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
 }
 
-// AI translation + idiom notes (Muse Spark, only with a key).
+// AI translation + idiom notes (Muse Spark, only with a key). The call
+// goes through this app's own /api/translate route so a browser block on
+// the Meta API can never silently empty the English side; the route
+// returns the Meta error text, which Make my book shows in the status.
 async function aiTranslate(
   key: string,
   inputPages: string[],
   inputName: string,
   outputName: string,
 ): Promise<{ english: string; note: string }[]> {
-  const prompt =
-    "Translate each " +
-    inputName +
-    " page below into " +
-    outputName +
-    " for a child, keeping the warmth and care, not just the literal words. " +
-    'Return JSON only, no prose: {"pages": [{"english": str, "note": str}]} where note briefly explains any idiom, blessing, or cultural expression on that page, or is empty. ' +
-    "Pages:\n" +
-    inputPages.map((p, i) => `Page ${i + 1}: ${p}`).join("\n");
-  const res = await fetch("https://api.meta.ai/v1/chat/completions", {
+  const res = await fetch("/api/translate", {
     method: "POST",
-    headers: {
-      Authorization: "Bearer " + key,
-      "Content-Type": "application/json",
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: "muse-spark-1.3",
-      messages: [{ role: "user", content: prompt }],
-      temperature: 0,
+      key,
+      pages: inputPages,
+      inputName,
+      outputName,
     }),
   });
-  if (!res.ok) throw new Error("Translation request failed (" + res.status + ")");
-  const data = await res.json();
-  const content =
-    (data.choices &&
-      data.choices[0] &&
-      data.choices[0].message &&
-      data.choices[0].message.content) ||
-    "";
-  const m = content.match(/\{[\s\S]*\}/);
-  if (!m) throw new Error("No translation JSON returned");
-  return JSON.parse(m[0]).pages || [];
+  const data = (await res.json().catch(() => ({}))) as {
+    pages?: { english: string; note: string }[];
+    error?: string;
+  };
+  if (!res.ok) {
+    throw new Error(
+      data.error || "Translation request failed (" + res.status + ")",
+    );
+  }
+  return data.pages || [];
 }
 
-// AI illustration (Muse Image, only with a key).
+// AI illustration (Muse Image, only with a key), via this app's own
+// /api/illustrate route for the same reason as translation.
 async function aiIllustrate(
   key: string,
   pageText: string,
   speaker: string,
 ): Promise<string> {
-  const prompt =
-    `Warm children's storybook illustration, soft watercolour style, no text in the image. Scene: ${pageText}. ` +
-    `Told by a grandmother${speaker ? " named " + speaker : ""}, for her grandchild. Consistent gentle storybook style.`;
-  const res = await fetch("https://api.meta.ai/v1/images/generations", {
+  const res = await fetch("/api/illustrate", {
     method: "POST",
-    headers: {
-      Authorization: "Bearer " + key,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ model: "muse-image-1.0", prompt }),
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ key, pageText, speaker }),
   });
-  if (!res.ok) throw new Error("Illustration request failed (" + res.status + ")");
-  const data = await res.json();
-  const item = data.data && data.data[0];
-  if (!item) throw new Error("No illustration returned");
-  // API returns base64 (b64_json) or a URL depending on the response shape.
-  if (item.b64_json) return "data:image/png;base64," + item.b64_json;
-  if (item.url) return item.url;
-  throw new Error("Illustration format not recognised");
+  const data = (await res.json().catch(() => ({}))) as {
+    image?: string;
+    error?: string;
+  };
+  if (!res.ok) {
+    throw new Error(
+      data.error || "Illustration request failed (" + res.status + ")",
+    );
+  }
+  if (!data.image) throw new Error("No illustration returned");
+  return data.image;
 }
 
 export default function Home() {
@@ -140,7 +151,7 @@ export default function Home() {
   const [recordingUrl, setRecordingUrl] = useState("");
   const [recording, setRecording] = useState(false);
   const [recordNote, setRecordNote] = useState(
-    "Recording stays on this device and is only played back here. If your browser supports it, you can also use its dictation to fill the box above.",
+    "Recording stays on this device. In a supported browser (Chrome or Edge), what you say is also transcribed live into the story box in the chosen input language — press Make my book to translate it. Otherwise, type what was said.",
   );
   const [saveNote, setSaveNote] = useState("");
   const [busy, setBusy] = useState(false);
@@ -148,6 +159,8 @@ export default function Home() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const streamRef = useRef<MediaStream | null>(null);
+  const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
+  const transcriptRef = useRef("");
   const pagesRef = useRef<Page[]>([]);
   pagesRef.current = pages;
 
@@ -176,37 +189,131 @@ export default function Home() {
   }, []);
 
   const startRecording = useCallback(async () => {
+    if (
+      typeof navigator === "undefined" ||
+      !navigator.mediaDevices ||
+      !navigator.mediaDevices.getUserMedia
+    ) {
+      setRecordNote(
+        "Microphone is not available in this browser. Use a recent Chrome, Edge, or Safari on localhost.",
+      );
+      return;
+    }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: true,
       });
       streamRef.current = stream;
       chunksRef.current = [];
-      const recorder = new MediaRecorder(stream);
+      // Pick a recording format this browser can actually play back:
+      // Chrome records webm, Safari records mp4. Labelling an mp4 blob
+      // as webm (the old code) plays nothing on Safari.
+      const mimeType =
+        ["audio/webm", "audio/mp4"].find(
+          (t) =>
+            typeof MediaRecorder !== "undefined" &&
+            MediaRecorder.isTypeSupported(t),
+        ) || "";
+      const recorder = mimeType
+        ? new MediaRecorder(stream, { mimeType })
+        : new MediaRecorder(stream);
       recorder.ondataavailable = (e) => {
         if (e.data.size) chunksRef.current.push(e.data);
       };
       recorder.onstop = () => {
-        const blob = new Blob(chunksRef.current, { type: "audio/webm" });
+        const blob = new Blob(chunksRef.current, {
+          type: recorder.mimeType || "audio/webm",
+        });
         setRecordingUrl(URL.createObjectURL(blob));
         setRecordNote(
-          "Recording saved in this tab only. Play it back above, and type what was said into the story box.",
+          "Recording saved in this tab only. Play it back above." +
+            (transcriptRef.current
+              ? " What you said was transcribed into the story box — press Make my book to translate it into " +
+                langName(outputLang) +
+                "."
+              : " Type what was said into the story box."),
         );
         stream.getTracks().forEach((t) => t.stop());
       };
       mediaRecorderRef.current = recorder;
       recorder.start();
       setRecording(true);
+      // Live transcription (no key needed): what is said appears in the
+      // story box as it is spoken, in the chosen input language.
+      transcriptRef.current = "";
+      const w = window as unknown as {
+        SpeechRecognition?: new () => SpeechRecognitionInstance;
+        webkitSpeechRecognition?: new () => SpeechRecognitionInstance;
+      };
+      const SpeechRecognitionCtor =
+        w.SpeechRecognition ?? w.webkitSpeechRecognition;
+      if (SpeechRecognitionCtor) {
+        const base = story.trim();
+        const recognition = new SpeechRecognitionCtor();
+        recognition.lang = recognitionLang(inputLang);
+        recognition.continuous = true;
+        recognition.interimResults = true;
+        recognition.onresult = (event) => {
+          let spoken = "";
+          for (let i = event.resultIndex; i < event.results.length; i++) {
+            spoken += event.results[i][0].transcript;
+          }
+          transcriptRef.current = spoken;
+          setStory(base + (base && spoken ? " " : "") + spoken);
+        };
+        recognition.onerror = (event) => {
+          setRecordNote(
+            (prev) =>
+              prev +
+              " Live transcription stopped (" +
+              event.error +
+              ") — the recording still plays back; type the rest.",
+          );
+        };
+        recognitionRef.current = recognition;
+        try {
+          recognition.start();
+        } catch {
+          recognitionRef.current = null;
+        }
+      } else {
+        setRecordNote(
+          "Recording started. This browser does not do live transcription, so type what was said into the story box.",
+        );
+      }
     } catch (e) {
+      const errName = (e as { name?: string })?.name ?? "";
+      const errMessage = e instanceof Error ? e.message : String(e);
+      let reason = errMessage;
+      if (errName === "NotAllowedError") {
+        reason =
+          "Microphone permission denied — allow the mic for localhost in the browser's site settings (and on a Mac, System Settings → Privacy & Security → Microphone for that browser), then try again.";
+      } else if (errName === "NotFoundError") {
+        reason = "No microphone found on this device.";
+      } else if (errName === "NotReadableError") {
+        reason =
+          "Microphone is already in use by another app — close it and try again.";
+      } else if (errName === "SecurityError") {
+        reason =
+          "Microphone is blocked on this page — open the app on localhost or https.";
+      }
       setRecordNote(
         "Could not start recording: " +
-          (e instanceof Error ? e.message : String(e)) +
-          " — you can still type the story.",
+          reason +
+          " You can still type the story.",
       );
     }
-  }, []);
+  }, [story, inputLang, outputLang]);
 
   const stopRecording = useCallback(() => {
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.stop();
+      } catch {
+        // already stopped
+      }
+      recognitionRef.current = null;
+    }
     if (
       mediaRecorderRef.current &&
       mediaRecorderRef.current.state !== "inactive"
