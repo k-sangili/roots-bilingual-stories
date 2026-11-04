@@ -5,7 +5,7 @@
 - **Track:** Indie developer (solo)
 - **Theme:** Build for Your World
 - **One line:** A grandparent speaks or writes in their own language, and their grandchild gets a storybook they can actually understand — the original and the translation side by side, with the care and the idioms explained, not just translated word for word. Input and output languages are chosen from dropdowns (Tamil, English, Hindi, Telugu, Malayalam, Kannada, Bengali, Punjabi, Marathi, Gujarati, Spanish, French, German, Italian, Portuguese, Russian, Arabic, Chinese, Japanese, Korean), defaulting to Tamil → English.
-- **Status:** Working application, built Nov 3, 2026. This replaces ClaimProof as the submission; ClaimProof remains in its own repo and artifacts, parked, not deleted.
+- **Status:** Working application, built Nov 3, 2026.
 
 > **Submission deadline:** Wed Nov 4, 2026, 9:00 PM ET / 6:00 PM PT, via the Cerebral Valley portal.
 
